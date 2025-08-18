@@ -177,3 +177,139 @@
 (define-private (get-next-nft-id)
     (+ (var-get nft-counter) u1)
 )
+
+;; Public functions
+(define-public (mint-carbon-credit 
+    (amount uint) 
+    (project-name (string-ascii 100)) 
+    (project-description (string-utf8 500)) 
+    (certification-body (string-ascii 50)) 
+    (location (string-ascii 100)) 
+    (project-type (string-ascii 50)))
+    (begin
+        ;; Validate input parameters
+        (try! (ok (validate-carbon-amount amount)) ERR-INVALID-AMOUNT)
+        (try! (ok (is-certification-body-verified certification-body)) ERR-INVALID-CERTIFICATION)
+        
+        ;; Get next NFT ID and increment counter
+        (let ((nft-id (get-next-nft-id)))
+            (begin
+                ;; Create the carbon credit NFT
+                (map-set carbon-nfts nft-id (tuple
+                    (owner tx-sender)
+                    (amount amount)
+                    (project-name project-name)
+                    (project-description project-description)
+                    (certification-body certification-body)
+                    (certification-date u0) ;; Will be updated in later commits
+                    (mint-date u0) ;; Will be updated in later commits
+                    (retirement-date u0)
+                    (is-retired false)
+                    (retirement-proof "")
+                    (location location)
+                    (project-type project-type)
+                ))
+                
+                ;; Set ownership
+                (map-set nft-owners nft-id tx-sender)
+                
+                ;; Update global statistics
+                (var-set total-carbon-minted (+ (var-get total-carbon-minted) amount))
+                
+                ;; Update user statistics
+                (update-user-stats tx-sender amount u0 u0 u0)
+                
+                ;; Record transaction
+                (record-transaction nft-id tx-sender tx-sender amount "mint" u0)
+                
+                ;; Increment NFT counter
+                (increment-nft-counter)
+                
+                ;; Return success
+                (ok nft-id)
+            )
+        )
+    )
+)
+
+(define-public (transfer-carbon-credit (nft-id uint) (new-owner principal))
+    (begin
+        ;; Validate NFT exists and sender is owner
+        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
+        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
+        (try! (ok (not (is-nft-listed nft-id))) ERR-ALREADY-LISTED)
+        
+        ;; Get NFT data
+        (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+            (begin
+                ;; Update NFT owner
+                (map-set carbon-nfts nft-id (merge nft-data (tuple (owner new-owner))))
+                (map-set nft-owners nft-id new-owner)
+                
+                ;; Update user statistics
+                (update-user-stats tx-sender (get amount nft-data) u0 u0 u0)
+                (update-user-stats new-owner (get amount nft-data) u0 u0 u0)
+                
+                ;; Record transaction
+                (record-transaction nft-id tx-sender new-owner (get amount nft-data) "transfer" u0)
+                
+                ;; Return success
+                (ok true)
+            )
+        )
+    )
+)
+
+(define-public (retire-carbon-credit (nft-id uint) (retirement-proof (string-utf8 200)))
+    (begin
+        ;; Validate NFT exists and sender is owner
+        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
+        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
+        
+        ;; Get NFT data
+        (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+            (begin
+                ;; Mark NFT as retired
+                (map-set carbon-nfts nft-id (merge nft-data (tuple 
+                    (is-retired true)
+                    (retirement-proof retirement-proof)
+                    (retirement-date u0) ;; Will be updated in later commits
+                )))
+                
+                ;; Update global statistics
+                (var-set total-carbon-retired (+ (var-get total-carbon-retired) (get amount nft-data)))
+                
+                ;; Update user statistics
+                (update-user-stats tx-sender u0 u0 (get amount nft-data) u0)
+                
+                ;; Record transaction
+                (record-transaction nft-id tx-sender tx-sender (get amount nft-data) "retire" u0)
+                
+                ;; Return success
+                (ok true)
+            )
+        )
+    )
+)
+
+(define-public (list-carbon-credit (nft-id uint) (price uint))
+    (begin
+        ;; Validate NFT exists and sender is owner
+        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
+        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
+        (try! (ok (not (is-nft-listed nft-id))) ERR-ALREADY-LISTED)
+        (try! (ok (validate-listing-price price)) ERR-INVALID-PRICE)
+        
+        ;; Create marketplace listing
+        (map-set marketplace-listings nft-id (tuple
+            (nft-id nft-id)
+            (seller tx-sender)
+            (price price)
+            (listing-date u0) ;; Will be updated in later commits
+            (is-active true)
+        ))
+        
+        ;; Return success
+        (ok true)
+    )
+)
