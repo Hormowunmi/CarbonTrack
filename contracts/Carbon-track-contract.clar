@@ -105,3 +105,75 @@
 ))
 
 ;; Events will be implemented in later commits
+
+;; Private functions
+(define-private (validate-carbon-amount (amount uint))
+    (and
+        (>= amount MIN-CARBON-AMOUNT)
+        (<= amount MAX-CARBON-AMOUNT)
+    )
+)
+
+(define-private (validate-listing-price (price uint))
+    (and
+        (>= price MIN-LISTING-PRICE)
+        (<= price MAX-LISTING-PRICE)
+    )
+)
+
+(define-private (is-certification-body-verified (body (string-ascii 50)))
+    (default-to false (get is-verified (map-get? certified-bodies body)))
+)
+
+(define-private (get-nft-owner (nft-id uint))
+    (map-get? nft-owners nft-id)
+)
+
+(define-private (is-nft-owner (nft-id uint) (owner principal))
+    (is-eq (get-nft-owner nft-id) (some owner))
+)
+
+(define-private (is-nft-retired (nft-id uint))
+    (default-to false (get is-retired (map-get? carbon-nfts nft-id)))
+)
+
+(define-private (is-nft-listed (nft-id uint))
+    (default-to false (get is-active (map-get? marketplace-listings nft-id)))
+)
+
+(define-private (calculate-platform-fee (amount uint))
+    (/ (* amount PLATFORM-FEE-PERCENTAGE) FEE-DENOMINATOR)
+)
+
+(define-private (update-user-stats (user principal) (owned-delta uint) (sold-delta uint) (retired-delta uint) (purchased-delta uint))
+    (let ((current-stats (default-to (tuple (total-owned u0) (total-sold u0) (total-retired u0) (total-purchased u0)) (map-get? user-stats user))))
+        (map-set user-stats user (tuple
+            (total-owned (+ (get total-owned current-stats) owned-delta))
+            (total-sold (+ (get total-sold current-stats) sold-delta))
+            (total-retired (+ (get total-retired current-stats) retired-delta))
+            (total-purchased (+ (get total-purchased current-stats) purchased-delta))
+        ))
+    )
+)
+
+(define-private (record-transaction (nft-id uint) (from principal) (to principal) (amount uint) (transaction-type (string-ascii 20)) (price uint))
+    (let ((transaction-id (+ (var-get nft-counter) u1)))
+        (map-set carbon-transactions transaction-id (tuple
+            (nft-id nft-id)
+            (from from)
+            (to to)
+            (amount amount)
+            (transaction-type transaction-type)
+            (timestamp u0) ;; Will be updated in later commits
+            (price price)
+        ))
+    )
+)
+
+(define-private (increment-nft-counter)
+    (var-set nft-counter (+ (var-get nft-counter) u1))
+)
+
+(define-private (get-next-nft-id)
+    (+ (var-get nft-counter) u1)
+)
