@@ -9,7 +9,7 @@
 ;; - Carbon credit marketplace functionality
 ;; - Environmental impact tracking
 
-;; Constants
+;; Constants (error codes as uints)
 (define-constant ERR-INSUFFICIENT-BALANCE (err u3001))
 (define-constant ERR-INVALID-AMOUNT (err u3002))
 (define-constant ERR-NFT-NOT-FOUND (err u3003))
@@ -46,7 +46,7 @@
 ;; Total carbon credits sold
 (define-data-var total-carbon-sold uint u0)
 ;; Platform fee collector
-(define-data-var platform-fee-collector principal (as-contract tx-sender))
+(define-data-var platform-fee-collector principal tx-sender)
 ;; Total platform fees collected
 (define-data-var total-platform-fees uint u0)
 
@@ -103,8 +103,6 @@
     (timestamp uint)
     (price uint)
 ))
-
-;; Events will be implemented in later commits
 
 ;; Private functions
 (define-private (validate-carbon-amount (amount uint))
@@ -164,7 +162,7 @@
             (to to)
             (amount amount)
             (transaction-type transaction-type)
-            (timestamp u0) ;; Will be updated in later commits
+            (timestamp block-height)
             (price price)
         ))
     )
@@ -186,13 +184,8 @@
     (certification-body (string-ascii 50)) 
     (location (string-ascii 100)) 
     (project-type (string-ascii 50)))
-    (begin
-        ;; Validate input parameters
-        (if (not (validate-carbon-amount amount)) (err ERR-INVALID-AMOUNT) (ok true))
-        (if (not (is-certification-body-verified certification-body)) (err ERR-INVALID-CERTIFICATION) (ok true))
-        
-        ;; Get next NFT ID and increment counter
-        (let ((nft-id (get-next-nft-id)))
+    (let ((nft-id (get-next-nft-id)))
+        (if (and (validate-carbon-amount amount) (is-certification-body-verified certification-body))
             (begin
                 ;; Create the carbon credit NFT
                 (map-set carbon-nfts nft-id (tuple
@@ -201,8 +194,8 @@
                     (project-name project-name)
                     (project-description project-description)
                     (certification-body certification-body)
-                    (certification-date u0) ;; Will be updated in later commits
-                    (mint-date u0) ;; Will be updated in later commits
+                    (certification-date block-height)
+                    (mint-date block-height)
                     (retirement-date u0)
                     (is-retired false)
                     (retirement-proof u"")
@@ -228,139 +221,132 @@
                 ;; Return success
                 (ok nft-id)
             )
+            (if (not (validate-carbon-amount amount)) 
+                ERR-INVALID-AMOUNT 
+                ERR-INVALID-CERTIFICATION)
         )
     )
 )
 
 (define-public (transfer-carbon-credit (nft-id uint) (new-owner principal))
-    (begin
-        ;; Validate NFT exists and sender is owner
-        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
-        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
-        (try! (ok (not (is-nft-listed nft-id))) ERR-ALREADY-LISTED)
-        
-        ;; Get NFT data
-        (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
-            (begin
-                ;; Update NFT owner
-                (map-set carbon-nfts nft-id (merge nft-data (tuple (owner new-owner))))
-                (map-set nft-owners nft-id new-owner)
-                
-                ;; Update user statistics
-                (update-user-stats tx-sender (get amount nft-data) u0 u0 u0)
-                (update-user-stats new-owner (get amount nft-data) u0 u0 u0)
-                
-                ;; Record transaction
-                (record-transaction nft-id tx-sender new-owner (get amount nft-data) "transfer" u0)
-                
-                ;; Return success
-                (ok true)
-            )
+    (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+        (begin
+            ;; Validate NFT exists and sender is owner
+            (asserts! (is-nft-owner nft-id tx-sender) ERR-NOT-OWNER)
+            (asserts! (not (is-nft-retired nft-id)) ERR-ALREADY-RETIRED)
+            (asserts! (not (is-nft-listed nft-id)) ERR-ALREADY-LISTED)
+            
+            ;; Update NFT owner
+            (map-set carbon-nfts nft-id (merge nft-data (tuple (owner new-owner))))
+            (map-set nft-owners nft-id new-owner)
+            
+            ;; Update user statistics
+            (update-user-stats tx-sender u0 u0 u0 u0)
+            (update-user-stats new-owner (get amount nft-data) u0 u0 u0)
+            
+            ;; Record transaction
+            (record-transaction nft-id tx-sender new-owner (get amount nft-data) "transfer" u0)
+            
+            ;; Return success
+            (ok true)
         )
     )
 )
 
 (define-public (retire-carbon-credit (nft-id uint) (retirement-proof (string-utf8 200)))
-    (begin
-        ;; Validate NFT exists and sender is owner
-        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
-        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
-        
-        ;; Get NFT data
-        (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
-            (begin
-                ;; Mark NFT as retired
-                (map-set carbon-nfts nft-id (merge nft-data (tuple 
-                    (is-retired true)
-                    (retirement-proof retirement-proof)
-                    (retirement-date u0) ;; Will be updated in later commits
-                )))
-                
-                ;; Update global statistics
-                (var-set total-carbon-retired (+ (var-get total-carbon-retired) (get amount nft-data)))
-                
-                ;; Update user statistics
-                (update-user-stats tx-sender u0 u0 (get amount nft-data) u0)
-                
-                ;; Record transaction
-                (record-transaction nft-id tx-sender tx-sender (get amount nft-data) "retire" u0)
-                
-                ;; Return success
-                (ok true)
-            )
+    (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+        (begin
+            ;; Validate NFT exists and sender is owner
+            (asserts! (is-nft-owner nft-id tx-sender) ERR-NOT-OWNER)
+            (asserts! (not (is-nft-retired nft-id)) ERR-ALREADY-RETIRED)
+            
+            ;; Mark NFT as retired
+            (map-set carbon-nfts nft-id (merge nft-data (tuple 
+                (is-retired true)
+                (retirement-proof retirement-proof)
+                (retirement-date block-height)
+            )))
+            
+            ;; Update global statistics
+            (var-set total-carbon-retired (+ (var-get total-carbon-retired) (get amount nft-data)))
+            
+            ;; Update user statistics
+            (update-user-stats tx-sender u0 u0 (get amount nft-data) u0)
+            
+            ;; Record transaction
+            (record-transaction nft-id tx-sender tx-sender (get amount nft-data) "retire" u0)
+            
+            ;; Return success
+            (ok true)
         )
     )
 )
 
 (define-public (list-carbon-credit (nft-id uint) (price uint))
-    (begin
-        ;; Validate NFT exists and sender is owner
-        (try! (ok (is-nft-owner nft-id tx-sender)) ERR-NOT-OWNER)
-        (try! (ok (not (is-nft-retired nft-id))) ERR-ALREADY-RETIRED)
-        (try! (ok (not (is-nft-listed nft-id))) ERR-ALREADY-LISTED)
-        (try! (ok (validate-listing-price price)) ERR-INVALID-PRICE)
-        
-        ;; Create marketplace listing
-        (map-set marketplace-listings nft-id (tuple
-            (nft-id nft-id)
-            (seller tx-sender)
-            (price price)
-            (listing-date u0) ;; Will be updated in later commits
-            (is-active true)
-        ))
-        
-        ;; Return success
-        (ok true)
+    (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+        (begin
+            ;; Validate NFT exists and sender is owner
+            (asserts! (is-nft-owner nft-id tx-sender) ERR-NOT-OWNER)
+            (asserts! (not (is-nft-retired nft-id)) ERR-ALREADY-RETIRED)
+            (asserts! (not (is-nft-listed nft-id)) ERR-ALREADY-LISTED)
+            (asserts! (validate-listing-price price) ERR-INVALID-PRICE)
+            
+            ;; Create marketplace listing
+            (map-set marketplace-listings nft-id (tuple
+                (nft-id nft-id)
+                (seller tx-sender)
+                (price price)
+                (listing-date block-height)
+                (is-active true)
+            ))
+            
+            ;; Return success
+            (ok true)
+        )
     )
 )
 
 ;; Marketplace functions
 (define-public (buy-carbon-credit (nft-id uint))
-    (begin
-        ;; Validate listing exists and is active
-        (let ((listing (unwrap! (map-get? marketplace-listings nft-id) ERR-LISTING-NOT-FOUND)))
-            (begin
-                (try! (ok (get is-active listing)) ERR-LISTING-NOT-FOUND)
-                (try! (ok (not (is-eq tx-sender (get seller listing)))) ERR-UNAUTHORIZED)
-                
-                ;; Get NFT data
-                (let ((nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
-                    (begin
-                        ;; Calculate platform fee
-                        (let ((platform-fee (calculate-platform-fee (get price listing)))
-                              (seller-amount (- (get price listing) platform-fee)))
-                            (begin
-                                ;; Transfer STX to seller (minus platform fee)
-                                (try! (stx-transfer? seller-amount tx-sender (get seller listing)) ERR-INSUFFICIENT-BALANCE)
-                                
-                                ;; Transfer platform fee to fee collector
-                                (try! (stx-transfer? platform-fee tx-sender (var-get platform-fee-collector)) ERR-INSUFFICIENT-BALANCE)
-                                
-                                ;; Update platform fees
-                                (var-set total-platform-fees (+ (var-get total-platform-fees) platform-fee))
-                                
-                                ;; Transfer NFT ownership
-                                (map-set carbon-nfts nft-id (merge nft-data (tuple (owner tx-sender))))
-                                (map-set nft-owners nft-id tx-sender)
-                                
-                                ;; Remove listing
-                                (map-set marketplace-listings nft-id (merge listing (tuple (is-active false))))
-                                
-                                ;; Update global statistics
-                                (var-set total-carbon-sold (+ (var-get total-carbon-sold) (get amount nft-data)))
-                                
-                                ;; Update user statistics
-                                (update-user-stats (get seller listing) u0 (get amount nft-data) u0 u0)
-                                (update-user-stats tx-sender u0 u0 u0 (get amount nft-data))
-                                
-                                ;; Record transaction
-                                (record-transaction nft-id (get seller listing) tx-sender (get amount nft-data) "sell" (get price listing))
-                                
-                                ;; Return success
-                                (ok true)
-                            )
-                        )
-                    )
+    (let ((listing (unwrap! (map-get? marketplace-listings nft-id) ERR-LISTING-NOT-FOUND))
+          (nft-data (unwrap! (map-get? carbon-nfts nft-id) ERR-NFT-NOT-FOUND)))
+        (begin
+            ;; Validate listing exists and is active
+            (asserts! (get is-active listing) ERR-LISTING-NOT-FOUND)
+            (asserts! (not (is-eq tx-sender (get seller listing))) ERR-UNAUTHORIZED)
+            
+            ;; Calculate platform fee
+            (let ((platform-fee (calculate-platform-fee (get price listing)))
+                  (seller-amount (- (get price listing) platform-fee)))
+                (begin
+                    ;; Transfer STX to seller (minus platform fee)
+                    (try! (stx-transfer? seller-amount tx-sender (get seller listing)))
+                    
+                    ;; Transfer platform fee to fee collector
+                    (try! (stx-transfer? platform-fee tx-sender (var-get platform-fee-collector)))
+                    
+                    ;; Update platform fees
+                    (var-set total-platform-fees (+ (var-get total-platform-fees) platform-fee))
+                    
+                    ;; Transfer NFT ownership
+                    (map-set carbon-nfts nft-id (merge nft-data (tuple (owner tx-sender))))
+                    (map-set nft-owners nft-id tx-sender)
+                    
+                    ;; Remove listing
+                    (map-set marketplace-listings nft-id (merge listing (tuple (is-active false))))
+                    
+                    ;; Update global statistics
+                    (var-set total-carbon-sold (+ (var-get total-carbon-sold) (get amount nft-data)))
+                    
+                    ;; Update user statistics
+                    (update-user-stats (get seller listing) u0 (get amount nft-data) u0 u0)
+                    (update-user-stats tx-sender (get amount nft-data) u0 u0 (get amount nft-data))
+                    
+                    ;; Record transaction
+                    (record-transaction nft-id (get seller listing) tx-sender (get amount nft-data) "sell" (get price listing))
+                    
+                    ;; Return success
+                    (ok true)
                 )
             )
         )
@@ -368,19 +354,17 @@
 )
 
 (define-public (unlist-carbon-credit (nft-id uint))
-    (begin
-        ;; Validate listing exists and sender is seller
-        (let ((listing (unwrap! (map-get? marketplace-listings nft-id) ERR-LISTING-NOT-FOUND)))
-            (begin
-                (try! (ok (is-eq tx-sender (get seller listing))) ERR-NOT-OWNER)
-                (try! (ok (get is-active listing)) ERR-LISTING-NOT-FOUND)
-                
-                ;; Remove listing
-                (map-set marketplace-listings nft-id (merge listing (tuple (is-active false))))
-                
-                ;; Return success
-                (ok true)
-            )
+    (let ((listing (unwrap! (map-get? marketplace-listings nft-id) ERR-LISTING-NOT-FOUND)))
+        (begin
+            ;; Validate listing exists and sender is seller
+            (asserts! (is-eq tx-sender (get seller listing)) ERR-NOT-OWNER)
+            (asserts! (get is-active listing) ERR-LISTING-NOT-FOUND)
+            
+            ;; Remove listing
+            (map-set marketplace-listings nft-id (merge listing (tuple (is-active false))))
+            
+            ;; Return success
+            (ok true)
         )
     )
 )
@@ -389,12 +373,12 @@
 (define-public (verify-certification-body (body (string-ascii 50)) (is-verified bool))
     (begin
         ;; Only platform fee collector can verify certification bodies
-        (try! (ok (is-eq tx-sender (var-get platform-fee-collector))) ERR-UNAUTHORIZED)
+        (asserts! (is-eq tx-sender (var-get platform-fee-collector)) ERR-UNAUTHORIZED)
         
         ;; Update certification body status
         (map-set certified-bodies body (tuple
             (is-verified is-verified)
-            (verification-date u0) ;; Will be updated in later commits
+            (verification-date block-height)
             (total-certifications u0)
         ))
         
@@ -406,7 +390,7 @@
 (define-public (set-platform-fee-collector (new-collector principal))
     (begin
         ;; Only current fee collector can change the collector
-        (try! (ok (is-eq tx-sender (var-get platform-fee-collector))) ERR-UNAUTHORIZED)
+        (asserts! (is-eq tx-sender (var-get platform-fee-collector)) ERR-UNAUTHORIZED)
         
         ;; Update fee collector
         (var-set platform-fee-collector new-collector)
