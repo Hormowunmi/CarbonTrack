@@ -1155,3 +1155,669 @@ Clarinet.test({
         block.receipts[0].result.expectErr().expectUint(3010); // ERR-UNAUTHORIZED
     },
 });
+
+// Commit 4: Edge Cases & Integration Tests
+// Comprehensive edge cases, integration scenarios, and complete workflow testing
+
+Clarinet.test({
+    name: "Edge case: Maximum amount carbon credit minting",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certificationBody = "MAX-TEST-CERT";
+        const maxAmount = 1000000000; // Maximum allowed: 1 billion kg CO2
+        
+        // Setup certification body
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        // Test maximum amount minting
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(maxAmount),
+                types.ascii("Maximum Capacity Project"),
+                types.utf8("Testing maximum allowable carbon credit amount"),
+                types.ascii(certificationBody),
+                types.ascii("Global Scale"),
+                types.ascii("Mixed")
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk().expectUint(1);
+        
+        // Verify the amount was recorded correctly
+        const nftData = chain.callReadOnlyFn("Carbon-track-contract", "get-carbon-nft", [types.uint(1)], deployer.address);
+        const nft = nftData.result.expectSome().expectTuple() as any;
+        assertEquals(nft['amount'], types.uint(maxAmount));
+        
+        // Test exceeding maximum amount fails
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(maxAmount + 1), // Exceeds maximum
+                types.ascii("Over Maximum Project"),
+                types.utf8("Testing over maximum"),
+                types.ascii(certificationBody),
+                types.ascii("Invalid"),
+                types.ascii("Test")
+            ], deployer.address)
+        ]);
+        
+        block.receipts[0].result.expectErr().expectUint(3002); // ERR-INVALID-AMOUNT
+    },
+});
+
+Clarinet.test({
+    name: "Edge case: Maximum price marketplace listing",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certificationBody = "PRICE-TEST";
+        const maxPrice = 1000000000000; // Maximum: 1,000,000 STX
+        
+        // Setup and mint NFT
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(5000),
+                types.ascii("High Value Project"),
+                types.utf8("Project for maximum price testing"),
+                types.ascii(certificationBody),
+                types.ascii("Premium Location"),
+                types.ascii("Premium Type")
+            ], deployer.address)
+        ]);
+        
+        // Test maximum price listing
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(maxPrice)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Test exceeding maximum price fails
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(3000),
+                types.ascii("Over Price Project"),
+                types.utf8("Testing over max price"),
+                types.ascii(certificationBody),
+                types.ascii("Test Location"),
+                types.ascii("Test Type")
+            ], deployer.address)
+        ]);
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(2),
+                types.uint(maxPrice + 1) // Exceeds maximum
+            ], deployer.address)
+        ]);
+        
+        block.receipts[0].result.expectErr().expectUint(3007); // ERR-INVALID-PRICE
+    },
+});
+
+Clarinet.test({
+    name: "Integration: Complete carbon credit lifecycle workflow",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const seller = accounts.get('wallet_1')!;
+        const buyer = accounts.get('wallet_2')!;
+        const newFeeCollector = accounts.get('wallet_3')!;
+        const certBody = "LIFECYCLE-TEST";
+        
+        // Step 1: Admin setup - verify certification body and change fee collector
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "set-platform-fee-collector", [
+                types.principal(newFeeCollector.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 2);
+        block.receipts[0].result.expectOk().expectBool(true);
+        block.receipts[1].result.expectOk().expectBool(true);
+        
+        // Step 2: Mint multiple NFTs to seller
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(2000),
+                types.ascii("Lifecycle NFT 1"),
+                types.utf8("First NFT in complete lifecycle test"),
+                types.ascii(certBody),
+                types.ascii("Location 1"),
+                types.ascii("Type 1")
+            ], seller.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1500),
+                types.ascii("Lifecycle NFT 2"),
+                types.utf8("Second NFT in complete lifecycle test"),
+                types.ascii(certBody),
+                types.ascii("Location 2"),
+                types.ascii("Type 2")
+            ], seller.address)
+        ]);
+        
+        // Step 3: Transfer one NFT to deployer
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "transfer-carbon-credit", [
+                types.uint(2),
+                types.principal(deployer.address)
+            ], seller.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Step 4: List first NFT for sale
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(500000) // 0.5 STX
+            ], seller.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Step 5: Buyer purchases the NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(1)
+            ], buyer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Step 6: Retire the purchased NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(1),
+                types.utf8("Retired for corporate sustainability - Integration Test")
+            ], buyer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Step 7: Retire the transferred NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(2),
+                types.utf8("Retired for personal offset - Integration Test")
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verification: Check final state
+        // Verify global statistics
+        const totalMinted = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-minted", [], deployer.address);
+        const totalSold = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-sold", [], deployer.address);
+        const totalRetired = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-retired", [], deployer.address);
+        const totalFees = chain.callReadOnlyFn("Carbon-track-contract", "get-total-platform-fees", [], deployer.address);
+        
+        totalMinted.result.expectUint(3500); // 2000 + 1500
+        totalSold.result.expectUint(2000); // NFT 1 sold
+        totalRetired.result.expectUint(3500); // Both NFTs retired
+        totalFees.result.expectUint(5000); // 1% of 500000 microSTX
+        
+        // Verify user statistics
+        const sellerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(seller.address)], deployer.address);
+        const buyerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(buyer.address)], deployer.address);
+        const deployerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(deployer.address)], deployer.address);
+        
+        const sellerData = sellerStats.result.expectSome().expectTuple() as any;
+        const buyerData = buyerStats.result.expectSome().expectTuple() as any;
+        const deployerData = deployerStats.result.expectSome().expectTuple() as any;
+        
+        // Seller: minted 3500, sold 2000, still has 0 (transferred 1500, sold 2000)
+        assertEquals(sellerData['total-sold'], types.uint(2000));
+        
+        // Buyer: purchased and retired 2000
+        assertEquals(buyerData['total-purchased'], types.uint(2000));
+        assertEquals(buyerData['total-retired'], types.uint(2000));
+        
+        // Deployer: received 1500 via transfer and retired it
+        assertEquals(deployerData['total-retired'], types.uint(1500));
+        
+        // Verify fee collector received fees
+        const feeCollector = chain.callReadOnlyFn("Carbon-track-contract", "get-platform-fee-collector", [], deployer.address);
+        feeCollector.result.expectPrincipal(newFeeCollector.address);
+    },
+});
+
+Clarinet.test({
+    name: "Edge case: Multiple marketplace operations on same NFT",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const user1 = accounts.get('wallet_1')!;
+        const certificationBody = "MULTI-OP-TEST";
+        
+        // Setup and mint NFT
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1000),
+                types.ascii("Multi Operation Test"),
+                types.utf8("Testing multiple operations"),
+                types.ascii(certificationBody),
+                types.ascii("Test Location"),
+                types.ascii("Test Type")
+            ], deployer.address)
+        ]);
+        
+        // List the NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(200000)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Try to list again - should fail (already listed)
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(250000)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3009); // ERR-ALREADY-LISTED
+        
+        // Try to transfer while listed - should fail
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "transfer-carbon-credit", [
+                types.uint(1),
+                types.principal(user1.address)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3009); // ERR-ALREADY-LISTED
+        
+        // Unlist and then transfer successfully
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "unlist-carbon-credit", [
+                types.uint(1)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "transfer-carbon-credit", [
+                types.uint(1),
+                types.principal(user1.address)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify ownership changed
+        const owner = chain.callReadOnlyFn("Carbon-track-contract", "get-nft-owner-readonly", [types.uint(1)], deployer.address);
+        owner.result.expectSome().expectPrincipal(user1.address);
+    },
+});
+
+Clarinet.test({
+    name: "Edge case: User statistics boundary conditions",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const user1 = accounts.get('wallet_1')!;
+        const user2 = accounts.get('wallet_2')!;
+        const certificationBody = "STATS-BOUNDARY-TEST";
+        
+        // Setup
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        // User1 mints, transfers, and receives in complex pattern
+        block = chain.mineBlock([
+            // User1 mints NFT #1
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(500),
+                types.ascii("Stats Test 1"),
+                types.utf8("First stats test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location A"),
+                types.ascii("Type A")
+            ], user1.address),
+            // User1 mints NFT #2
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(800),
+                types.ascii("Stats Test 2"),
+                types.utf8("Second stats test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location B"),
+                types.ascii("Type B")
+            ], user1.address)
+        ]);
+        
+        // User1 transfers NFT #1 to user2
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "transfer-carbon-credit", [
+                types.uint(1),
+                types.principal(user2.address)
+            ], user1.address)
+        ]);
+        
+        // User2 lists and user1 buys back their own original NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(100000)
+            ], user2.address)
+        ]);
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(1)
+            ], user1.address) // User1 buying back their original NFT
+        ]);
+        
+        // User1 retires both NFTs
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(1),
+                types.utf8("Retired original NFT after buyback")
+            ], user1.address),
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(2),
+                types.utf8("Retired second NFT")
+            ], user1.address)
+        ]);
+        
+        // Verify complex user statistics
+        const user1Stats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(user1.address)], deployer.address);
+        const user2Stats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(user2.address)], deployer.address);
+        
+        const u1Stats = user1Stats.result.expectSome().expectTuple() as any;
+        const u2Stats = user2Stats.result.expectSome().expectTuple() as any;
+        
+        // User1: Originally minted 1300 (500+800), then bought back 500. 
+        // total-owned tracks cumulative amounts owned, not decremented on transfer
+        // Initial mint: 1300, then purchase: +500 = 1800 total ever owned
+        assertEquals(u1Stats['total-owned'], types.uint(1800)); // Total amount ever owned (initial 1300 + purchased back 500)
+        assertEquals(u1Stats['total-purchased'], types.uint(500)); // Bought back NFT #1
+        assertEquals(u1Stats['total-retired'], types.uint(1300)); // Retired both NFTs
+        
+        // User2: Received 500 via transfer, sold 500, but total-owned is cumulative
+        assertEquals(u2Stats['total-sold'], types.uint(500)); // Sold NFT #1
+        assertEquals(u2Stats['total-owned'], types.uint(500)); // Total amount ever owned (received via transfer)
+    },
+});
+
+Clarinet.test({
+    name: "Integration: Platform fee collection across multiple sales",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const seller1 = accounts.get('wallet_1')!;
+        const seller2 = accounts.get('wallet_2')!;
+        const buyer1 = accounts.get('wallet_3')!;
+        const buyer2 = accounts.get('wallet_4')!;
+        const certificationBody = "FEE-INTEGRATION-TEST";
+        
+        // Setup
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        // Multiple sellers mint NFTs
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1000),
+                types.ascii("Fee Test 1"),
+                types.utf8("First fee test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 1"),
+                types.ascii("Type 1")
+            ], seller1.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(2000),
+                types.ascii("Fee Test 2"),
+                types.utf8("Second fee test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 2"),
+                types.ascii("Type 2")
+            ], seller2.address)
+        ]);
+        
+        // Multiple sales with different prices
+        const price1 = 300000; // 0.3 STX - fee: 3000 microSTX
+        const price2 = 750000; // 0.75 STX - fee: 7500 microSTX
+        const expectedTotalFees = 10500; // 3000 + 7500
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(price1)
+            ], seller1.address),
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(2),
+                types.uint(price2)
+            ], seller2.address)
+        ]);
+        
+        // Initial fees should be 0
+        let totalFees = chain.callReadOnlyFn("Carbon-track-contract", "get-total-platform-fees", [], deployer.address);
+        totalFees.result.expectUint(0);
+        
+        // First sale
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(1)
+            ], buyer1.address)
+        ]);
+        
+        // Check fees after first sale
+        totalFees = chain.callReadOnlyFn("Carbon-track-contract", "get-total-platform-fees", [], deployer.address);
+        totalFees.result.expectUint(3000); // 1% of 300000
+        
+        // Second sale
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(2)
+            ], buyer2.address)
+        ]);
+        
+        // Check final accumulated fees
+        totalFees = chain.callReadOnlyFn("Carbon-track-contract", "get-total-platform-fees", [], deployer.address);
+        totalFees.result.expectUint(expectedTotalFees);
+        
+        // Verify sales statistics
+        const totalSold = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-sold", [], deployer.address);
+        totalSold.result.expectUint(3000); // 1000 + 2000
+    },
+});
+
+Clarinet.test({
+    name: "Edge case: NFT operations after retirement",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const user1 = accounts.get('wallet_1')!;
+        const certificationBody = "POST-RETIREMENT-TEST";
+        
+        // Setup and mint NFT
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1200),
+                types.ascii("Post Retirement Test"),
+                types.utf8("Testing operations after retirement"),
+                types.ascii(certificationBody),
+                types.ascii("Test Location"),
+                types.ascii("Test Type")
+            ], deployer.address)
+        ]);
+        
+        // Retire the NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(1),
+                types.utf8("Initial retirement for testing")
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // All subsequent operations should fail on retired NFT
+        
+        // Try to transfer - should fail
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "transfer-carbon-credit", [
+                types.uint(1),
+                types.principal(user1.address)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3005); // ERR-ALREADY-RETIRED
+        
+        // Try to list - should fail
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(100000)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3005); // ERR-ALREADY-RETIRED
+        
+        // Try to retire again - should fail
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(1),
+                types.utf8("Second retirement attempt")
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3005); // ERR-ALREADY-RETIRED
+        
+        // Verify NFT is still marked as retired with original proof
+        const nftData = chain.callReadOnlyFn("Carbon-track-contract", "get-carbon-nft", [types.uint(1)], deployer.address);
+        const nft = nftData.result.expectSome().expectTuple() as any;
+        assertEquals(nft['is-retired'], types.bool(true));
+        assertEquals(nft['retirement-proof'], types.utf8("Initial retirement for testing"));
+    },
+});
+
+Clarinet.test({
+    name: "Integration: Mass operations stress test",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certificationBody = "MASS-OPERATIONS-TEST";
+        
+        // Setup
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        // Mass mint operation - 5 NFTs in one block
+        const nftAmounts = [1000, 1500, 2000, 2500, 3000];
+        const totalExpectedAmount = 10000;
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(nftAmounts[0]),
+                types.ascii("Mass Test 1"),
+                types.utf8("First mass test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 1"),
+                types.ascii("Type 1")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(nftAmounts[1]),
+                types.ascii("Mass Test 2"),
+                types.utf8("Second mass test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 2"),
+                types.ascii("Type 2")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(nftAmounts[2]),
+                types.ascii("Mass Test 3"),
+                types.utf8("Third mass test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 3"),
+                types.ascii("Type 3")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(nftAmounts[3]),
+                types.ascii("Mass Test 4"),
+                types.utf8("Fourth mass test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 4"),
+                types.ascii("Type 4")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(nftAmounts[4]),
+                types.ascii("Mass Test 5"),
+                types.utf8("Fifth mass test NFT"),
+                types.ascii(certificationBody),
+                types.ascii("Location 5"),
+                types.ascii("Type 5")
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 5);
+        // Verify all mints succeeded
+        for (let i = 0; i < 5; i++) {
+            block.receipts[i].result.expectOk().expectUint(i + 1);
+        }
+        
+        // Verify total minted amount
+        const totalMinted = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-minted", [], deployer.address);
+        totalMinted.result.expectUint(totalExpectedAmount);
+        
+        // Mass retirement operation - retire all 5 NFTs
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(1),
+                types.utf8("Mass retirement 1")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(2),
+                types.utf8("Mass retirement 2")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(3),
+                types.utf8("Mass retirement 3")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(4),
+                types.utf8("Mass retirement 4")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(5),
+                types.utf8("Mass retirement 5")
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 5);
+        // Verify all retirements succeeded
+        for (let i = 0; i < 5; i++) {
+            block.receipts[i].result.expectOk().expectBool(true);
+        }
+        
+        // Verify total retired amount
+        const totalRetired = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-retired", [], deployer.address);
+        totalRetired.result.expectUint(totalExpectedAmount);
+        
+        // Verify NFT counter
+        const nftCounter = chain.callReadOnlyFn("Carbon-track-contract", "get-nft-counter", [], deployer.address);
+        nftCounter.result.expectUint(5);
+    },
+});
