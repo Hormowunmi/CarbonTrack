@@ -737,3 +737,421 @@ Clarinet.test({
         feeCollector.result.expectPrincipal(deployer.address);
     },
 });
+
+// Commit 3: Admin & Query Functions Tests
+// Testing admin functions and all read-only query functions
+
+Clarinet.test({
+    name: "verify-certification-body: Successfully verifies new certification body",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certBody = "VERRA-VCS";
+        
+        // Verify new certification body
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify the certification body status
+        const certData = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii(certBody)], deployer.address);
+        const cert = certData.result.expectSome().expectTuple() as any;
+        assertEquals(cert['is-verified'], types.bool(true));
+        assertEquals(cert['total-certifications'], types.uint(0));
+    },
+});
+
+Clarinet.test({
+    name: "verify-certification-body: Successfully revokes certification body",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certBody = "GOLD-STANDARD";
+        
+        // First verify the certification body
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        // Now revoke it
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody),
+                types.bool(false)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify the certification body is now unverified
+        const certData = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii(certBody)], deployer.address);
+        const cert = certData.result.expectSome().expectTuple() as any;
+        assertEquals(cert['is-verified'], types.bool(false));
+    },
+});
+
+Clarinet.test({
+    name: "verify-certification-body: Fails when called by non-admin",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const nonAdmin = accounts.get('wallet_1')!;
+        const certBody = "UNAUTHORIZED-CERT";
+        
+        // Try to verify certification body as non-admin
+        const block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody),
+                types.bool(true)
+            ], nonAdmin.address) // Non-admin address
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectErr().expectUint(3010); // ERR-UNAUTHORIZED
+    },
+});
+
+Clarinet.test({
+    name: "set-platform-fee-collector: Successfully changes fee collector",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const newCollector = accounts.get('wallet_1')!;
+        
+        // Change the platform fee collector
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "set-platform-fee-collector", [
+                types.principal(newCollector.address)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify the fee collector changed
+        const feeCollector = chain.callReadOnlyFn("Carbon-track-contract", "get-platform-fee-collector", [], deployer.address);
+        feeCollector.result.expectPrincipal(newCollector.address);
+    },
+});
+
+Clarinet.test({
+    name: "set-platform-fee-collector: Fails when called by non-current collector",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const nonCollector = accounts.get('wallet_1')!;
+        const targetCollector = accounts.get('wallet_2')!;
+        
+        // Try to change fee collector from non-collector account
+        const block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "set-platform-fee-collector", [
+                types.principal(targetCollector.address)
+            ], nonCollector.address) // Not the current collector
+        ]);
+        
+        assertEquals(block.receipts.length, 1);
+        block.receipts[0].result.expectErr().expectUint(3010); // ERR-UNAUTHORIZED
+    },
+});
+
+Clarinet.test({
+    name: "get-user-stats: Tracks user statistics correctly",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const buyer = accounts.get('wallet_1')!;
+        const certificationBody = "CLIMATE-ACTION";
+        
+        // Setup: Verify certification body and test user statistics
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            // Mint two NFTs
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(500),
+                types.ascii("Stats Test 1"),
+                types.utf8("First NFT for stats testing"),
+                types.ascii(certificationBody),
+                types.ascii("Location 1"),
+                types.ascii("Type 1")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(700),
+                types.ascii("Stats Test 2"),
+                types.utf8("Second NFT for stats testing"),
+                types.ascii(certificationBody),
+                types.ascii("Location 2"),
+                types.ascii("Type 2")
+            ], deployer.address)
+        ]);
+        
+        // Check deployer's initial stats after minting
+        let deployerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(deployer.address)], deployer.address);
+        let stats = deployerStats.result.expectSome().expectTuple() as any;
+        assertEquals(stats['total-owned'], types.uint(1200)); // 500 + 700
+        assertEquals(stats['total-sold'], types.uint(0));
+        assertEquals(stats['total-retired'], types.uint(0));
+        assertEquals(stats['total-purchased'], types.uint(0));
+        
+        // List and sell first NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(1),
+                types.uint(100000) // 0.1 STX
+            ], deployer.address)
+        ]);
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(1)
+            ], buyer.address)
+        ]);
+        
+        // Check buyer's stats after purchase
+        let buyerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(buyer.address)], deployer.address);
+        stats = buyerStats.result.expectSome().expectTuple() as any;
+        assertEquals(stats['total-owned'], types.uint(500));
+        assertEquals(stats['total-purchased'], types.uint(500));
+        
+        // Retire second NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(2),
+                types.utf8("Retired for corporate neutrality")
+            ], deployer.address)
+        ]);
+        
+        // Check deployer's final stats
+        deployerStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(deployer.address)], deployer.address);
+        stats = deployerStats.result.expectSome().expectTuple() as any;
+        assertEquals(stats['total-sold'], types.uint(500));
+        assertEquals(stats['total-retired'], types.uint(700));
+    },
+});
+
+Clarinet.test({
+    name: "Query functions: get-carbon-nft returns complete NFT data",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const certificationBody = "ISO-14064";
+        const projectName = "Solar Farm Indonesia";
+        const description = "Large scale solar installation reducing grid dependency";
+        const location = "Java-Indonesia";
+        const projectType = "Solar Energy";
+        
+        // Setup and mint NFT
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1500),
+                types.ascii(projectName),
+                types.utf8(description),
+                types.ascii(certificationBody),
+                types.ascii(location),
+                types.ascii(projectType)
+            ], deployer.address)
+        ]);
+        
+        // Query NFT data and verify all fields
+        const nftData = chain.callReadOnlyFn("Carbon-track-contract", "get-carbon-nft", [types.uint(1)], deployer.address);
+        const nft = nftData.result.expectSome().expectTuple() as any;
+        
+        assertEquals(nft['owner'].toString(), deployer.address);
+        assertEquals(nft['amount'], types.uint(1500));
+        assertEquals(nft['project-name'], types.ascii(projectName));
+        assertEquals(nft['project-description'], types.utf8(description));
+        assertEquals(nft['certification-body'], types.ascii(certificationBody));
+        assertEquals(nft['location'], types.ascii(location));
+        assertEquals(nft['project-type'], types.ascii(projectType));
+        assertEquals(nft['is-retired'], types.bool(false));
+        assertEquals(nft['retirement-proof'], types.utf8(""));
+        assertEquals(nft['retirement-date'], types.uint(0));
+    },
+});
+
+Clarinet.test({
+    name: "Query functions: Global statistics tracking accuracy",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const buyer = accounts.get('wallet_1')!;
+        const certificationBody = "PLAN-VIVO";
+        
+        // Initial state check
+        let totalMinted = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-minted", [], deployer.address);
+        let totalRetired = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-retired", [], deployer.address);
+        let totalSold = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-sold", [], deployer.address);
+        
+        totalMinted.result.expectUint(0);
+        totalRetired.result.expectUint(0);
+        totalSold.result.expectUint(0);
+        
+        // Setup and perform various operations
+        let block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certificationBody),
+                types.bool(true)
+            ], deployer.address),
+            // Mint multiple NFTs
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1000),
+                types.ascii("Global Stats Test 1"),
+                types.utf8("First NFT for global stats"),
+                types.ascii(certificationBody),
+                types.ascii("Location A"),
+                types.ascii("Type A")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(1500),
+                types.ascii("Global Stats Test 2"),
+                types.utf8("Second NFT for global stats"),
+                types.ascii(certificationBody),
+                types.ascii("Location B"),
+                types.ascii("Type B")
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "mint-carbon-credit", [
+                types.uint(800),
+                types.ascii("Global Stats Test 3"),
+                types.utf8("Third NFT for global stats"),
+                types.ascii(certificationBody),
+                types.ascii("Location C"),
+                types.ascii("Type C")
+            ], deployer.address)
+        ]);
+        
+        // Check minted stats
+        totalMinted = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-minted", [], deployer.address);
+        totalMinted.result.expectUint(3300); // 1000 + 1500 + 800
+        
+        // Retire one NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "retire-carbon-credit", [
+                types.uint(2),
+                types.utf8("Global stats retirement test")
+            ], deployer.address)
+        ]);
+        
+        // List and sell another NFT
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "list-carbon-credit", [
+                types.uint(3),
+                types.uint(150000) // 0.15 STX
+            ], deployer.address)
+        ]);
+        
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "buy-carbon-credit", [
+                types.uint(3)
+            ], buyer.address)
+        ]);
+        
+        // Verify final global statistics
+        totalRetired = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-retired", [], deployer.address);
+        totalSold = chain.callReadOnlyFn("Carbon-track-contract", "get-total-carbon-sold", [], deployer.address);
+        let totalFees = chain.callReadOnlyFn("Carbon-track-contract", "get-total-platform-fees", [], deployer.address);
+        
+        totalRetired.result.expectUint(1500); // NFT #2
+        totalSold.result.expectUint(800); // NFT #3
+        totalFees.result.expectUint(1500); // 1% of 150000 microSTX
+    },
+});
+
+Clarinet.test({
+    name: "Query functions: Non-existent data returns none correctly",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        
+        // Query non-existent NFT
+        const nftData = chain.callReadOnlyFn("Carbon-track-contract", "get-carbon-nft", [types.uint(999)], deployer.address);
+        nftData.result.expectNone();
+        
+        // Query non-existent NFT owner
+        const ownerData = chain.callReadOnlyFn("Carbon-track-contract", "get-nft-owner-readonly", [types.uint(999)], deployer.address);
+        ownerData.result.expectNone();
+        
+        // Query non-existent marketplace listing
+        const listingData = chain.callReadOnlyFn("Carbon-track-contract", "get-marketplace-listing", [types.uint(999)], deployer.address);
+        listingData.result.expectNone();
+        
+        // Query user stats for user with no activity
+        const userStats = chain.callReadOnlyFn("Carbon-track-contract", "get-user-stats", [types.principal(deployer.address)], deployer.address);
+        userStats.result.expectNone();
+        
+        // Query non-existent certification body
+        const certData = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii("NON-EXISTENT")], deployer.address);
+        certData.result.expectNone();
+    },
+});
+
+Clarinet.test({
+    name: "Admin workflow: Complete certification body lifecycle",
+    async fn(chain: Chain, accounts: Map<string, Account>) {
+        const deployer = accounts.get('deployer')!;
+        const newFeeCollector = accounts.get('wallet_1')!;
+        const certBody1 = "CDM-UNFCCC";
+        const certBody2 = "ACR-REGISTRY";
+        
+        // Test complete admin workflow
+        let block = chain.mineBlock([
+            // Verify multiple certification bodies
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody1),
+                types.bool(true)
+            ], deployer.address),
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody2),
+                types.bool(true)
+            ], deployer.address)
+        ]);
+        
+        assertEquals(block.receipts.length, 2);
+        block.receipts[0].result.expectOk().expectBool(true);
+        block.receipts[1].result.expectOk().expectBool(true);
+        
+        // Verify both are active
+        let cert1 = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii(certBody1)], deployer.address);
+        let cert2 = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii(certBody2)], deployer.address);
+        
+        let cert1Data = cert1.result.expectSome().expectTuple() as any;
+        let cert2Data = cert2.result.expectSome().expectTuple() as any;
+        assertEquals(cert1Data['is-verified'], types.bool(true));
+        assertEquals(cert2Data['is-verified'], types.bool(true));
+        
+        // Change fee collector
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "set-platform-fee-collector", [
+                types.principal(newFeeCollector.address)
+            ], deployer.address)
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify new collector can manage certification bodies
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody1),
+                types.bool(false) // Revoke certification
+            ], newFeeCollector.address) // New collector
+        ]);
+        block.receipts[0].result.expectOk().expectBool(true);
+        
+        // Verify the change
+        cert1 = chain.callReadOnlyFn("Carbon-track-contract", "get-certification-body", [types.ascii(certBody1)], deployer.address);
+        cert1Data = cert1.result.expectSome().expectTuple() as any;
+        assertEquals(cert1Data['is-verified'], types.bool(false));
+        
+        // Verify old collector can no longer make changes
+        block = chain.mineBlock([
+            Tx.contractCall("Carbon-track-contract", "verify-certification-body", [
+                types.ascii(certBody2),
+                types.bool(false)
+            ], deployer.address) // Old collector
+        ]);
+        block.receipts[0].result.expectErr().expectUint(3010); // ERR-UNAUTHORIZED
+    },
+});
